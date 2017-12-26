@@ -75,9 +75,15 @@ call_body(Body, Payload, State, ReplyChannel) ->
 
 send(Conn, {Type, Payload} = _Reply, hybi) ->
     Prefix = <<1:1, 0:3, (payload_type(Type)):4, (payload_length(iolist_size(Payload)))/binary>>,
-    Conn:send([Prefix, Payload]);
+    case application:get_env(mochiweb, ws_async_send, true) of
+        true  -> Conn:async_send([Prefix, Payload]);
+        false -> Conn:send([Prefix, Payload])
+    end;
 send(Conn, {_Type, Payload} = _Reply, hixie) ->
-    Conn:send([0, Payload, 255]).
+    case application:get_env(mochiweb, ws_async_send, true) of
+        true  -> Conn:async_send([0, Payload, 255]);
+        false -> Conn:send([0, Payload, 255])
+    end.
 
 payload_type(text) -> 1;
 payload_type(binary) -> 2.
