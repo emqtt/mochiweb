@@ -24,61 +24,57 @@
 -module(mochiweb_response).
 -author('bob@mochimedia.com').
 
+-include("mochiweb.hrl").
+
 -define(QUIP, "Any of you quaids got a smint?").
 
 -export([new/3, get_header_value/2, get/2, dump/1]).
 -export([send/2, write_chunk/2]).
 
-%% @type response(). A mochiweb_response parameterized module instance.
-
-%% @spec new(Request, Code, Headers) -> response()
 %% @doc Create a new mochiweb_response instance.
+%%-spec(new(request(), code(), headers()) -> response()).
 new(Request, Code, Headers) ->
     {?MODULE, [Request, Code, Headers]}.
 
-%% @spec get_header_value(string() | atom() | binary(), response()) ->
-%%           string() | undefined
 %% @doc Get the value of the given response header.
-get_header_value(K, {?MODULE, [_Request, _Code, Headers]}) ->
-    mochiweb_headers:get_value(K, Headers).
+-spec(get_header_value(string() | atom() | binary(), response())
+      -> string() | undefined).
+get_header_value(Key, #response{headers = Headers}) ->
+    mochiweb_headers:get_value(Key, Headers).
 
-%% @spec get(request | code | headers, response()) -> term()
 %% @doc Return the internal representation of the given field.
-get(request, {?MODULE, [Request, _Code, _Headers]}) ->
+-spec(get(request | code | headers, response()) -> term()).
+get(request, #response{request = Request}) ->
     Request;
-get(code, {?MODULE, [_Request, Code, _Headers]}) ->
+get(code, #response{code = Code}) ->
     Code;
-get(headers, {?MODULE, [_Request, _Code, Headers]}) ->
+get(headers, #response{headers = Headers}) ->
     Headers.
 
-%% @spec dump(response()) -> {mochiweb_request, [{atom(), term()}]}
-%% @doc Dump the internal representation to a "human readable" set of terms
-%%      for debugging/inspection purposes.
-dump({?MODULE, [Request, Code, Headers]}) ->
-    [{request, Request:dump()},
-     {code, Code},
-     {headers, mochiweb_headers:to_list(Headers)}].
+%% @doc Dump the internal representation to a "human readable"
+%%      set of terms for debugging/inspection purposes.
+-spec(dump(response()) -> {mochiweb_request, [{atom(), term()}]}).
+dump(#response{request = Request, code = Code, headers = Headers}) ->
+    [{request, mochiweb_request:dump(Request)},
+     {code, Code}, {headers, mochiweb_headers:to_list(Headers)}].
 
 %% @spec send(iodata(), response()) -> ok
 %% @doc Send data over the socket if the method is not HEAD.
-send(Data, {?MODULE, [Request, _Code, _Headers]}) ->
-    case Request:get(method) of
-        'HEAD' ->
-            ok;
-        _ ->
-            Request:send(Data)
+send(Data, #response{request = Req}) ->
+    case mochiweb_request:get(method, Req) of
+        'HEAD' -> ok;
+        _ -> mochiweb_request:send(Data, Req)
     end.
 
-%% @spec write_chunk(iodata(), response()) -> ok
 %% @doc Write a chunk of a HTTP chunked response. If Data is zero length,
 %%      then the chunked response will be finished.
-write_chunk(Data, {?MODULE, [Request, _Code, _Headers]}=THIS) ->
-    case Request:get(version) of
+-spec(write_chunk(iodata(), response()) -> ok).
+write_chunk(Data, Resp = #response{request = Req}) ->
+    case mochiweb_request:get(version, Req) of
         Version when Version >= {1, 1} ->
             Length = iolist_size(Data),
-            send([io_lib:format("~.16b\r\n", [Length]), Data, <<"\r\n">>], THIS);
+            send([io_lib:format("~.16b\r\n", [Length]), Data, <<"\r\n">>], Resp);
         _ ->
-            send(Data, THIS)
+            send(Data, Resp)
     end.
-
 

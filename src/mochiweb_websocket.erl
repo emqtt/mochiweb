@@ -25,44 +25,49 @@
 
 %% @doc Websockets module for Mochiweb. Based on Misultin websockets module.
 
--export([loop/5, upgrade_connection/2, request/5]).
--export([send/3]).
+-import(mochiweb_request, [get_header_value/2]).
+
+-export([loop/6, upgrade_connection/2, request/6]).
+-export([send/4]).
+
 -ifdef(TEST).
 -compile(export_all).
 -endif.
-loop(Conn, Body, State, WsVersion, ReplyChannel) ->
-    ok = mochiweb_util:exit_if_closed(Conn:setopts([{packet, 0}, {active, once}])),
-    proc_lib:hibernate(?MODULE, request,
-                       [Conn, Body, State, WsVersion, ReplyChannel]).
 
-request(Conn, Body, State, WsVersion, ReplyChannel) ->
+loop(Transport, Sock, Body, State, WsVersion, ReplyChannel) ->
+    ok = mochiweb_util:exit_if_closed(
+           Transport:setopts(Sock, [{packet, 0}, {active, once}])),
+    proc_lib:hibernate(?MODULE, request,
+                       [Transport, Sock, Body, State, WsVersion, ReplyChannel]).
+
+request(Transport, Sock, Body, State, WsVersion, ReplyChannel) ->
     receive
         {tcp_closed, _} ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal);
         {ssl_closed, _} ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal);
         {tcp_error, _, _} ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal);
         {ssl_error, _, _Reason} ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal);
         {TcpOrSsl, _, WsFrames} when (TcpOrSsl =:= tcp) orelse (TcpOrSsl =:= ssl) ->
-            case parse_frames(WsVersion, WsFrames, Conn) of
+            case parse_frames(WsVersion, WsFrames, Transport, Sock) of
                 close ->
-                    Conn:close(),
+                    Transport:fast_close(Sock),
                     exit(normal);
                 error ->
-                    Conn:close(),
+                    Transport:fast_close(Sock),
                     exit(normal);
                 Payload ->
                     NewState = call_body(Body, Payload, State, ReplyChannel),
-                    loop(Conn, Body, NewState, WsVersion, ReplyChannel)
+                    loop(Transport, Sock, Body, NewState, WsVersion, ReplyChannel)
             end;
         _ ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal)
     end.
 
@@ -73,47 +78,47 @@ call_body({M, F}, Payload, State, ReplyChannel) ->
 call_body(Body, Payload, State, ReplyChannel) ->
     Body(Payload, State, ReplyChannel).
 
-send(Conn, {Type, Payload} = _Reply, hybi) ->
+send(Transport, Sock, {Type, Payload} = _Reply, hybi) ->
     Prefix = <<1:1, 0:3, (payload_type(Type)):4, (payload_length(iolist_size(Payload)))/binary>>,
-    Conn:send([Prefix, Payload]);
-send(Conn, {_Type, Payload} = _Reply, hixie) ->
-    Conn:send([0, Payload, 255]).
+    Transport:send(Sock, [Prefix, Payload]);
+send(Transport, Sock, {_Type, Payload} = _Reply, hixie) ->
+    Transport:send(Sock, [0, Payload, 255]).
 
 payload_type(text) -> 1;
 payload_type(binary) -> 2.
 
 upgrade_connection(Req, Body) ->
+    Transport = mochiweb_request:get(transport, Req),
+    Sock = mochiweb_request:get(socket, Req),
     case make_handshake(Req) of
         {Version, Response} ->
-            Req:respond(Response),
-            Conn = Req:get(connection),
+            mochiweb_request:respond(Response, Req),
             ReplyChannel = fun(Reply) ->
-                ?MODULE:send(Conn, Reply, Version)
+                ?MODULE:send(Transport, Sock, Reply, Version)
             end,
             Reentry = fun (State) ->
-                ?MODULE:loop(Conn, Body, State, Version, ReplyChannel)
+                ?MODULE:loop(Transport, Sock, Body, State, Version, ReplyChannel)
             end,
             {Reentry, ReplyChannel};
         _ ->
-            Conn = Req:get(connection),
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal)
     end.
 
 make_handshake(Req) ->
-    SecKey  = Req:get_header_value("sec-websocket-key"),
-    Sec1Key = Req:get_header_value("Sec-WebSocket-Key1"),
-    Sec2Key = Req:get_header_value("Sec-WebSocket-Key2"),
-    SubProto = Req:get_header_value("Sec-Websocket-Protocol"),
-    Origin = Req:get_header_value(origin),
+    SecKey  = get_header_value("sec-websocket-key", Req),
+    Sec1Key = get_header_value("Sec-WebSocket-Key1", Req),
+    Sec2Key = get_header_value("Sec-WebSocket-Key2", Req),
+    SubProto = get_header_value("Sec-Websocket-Protocol", Req),
+    Origin = get_header_value(origin, Req),
 
     Result =
     if SecKey =/= undefined ->
             hybi_handshake(SecKey);
        Sec1Key =/= undefined andalso Sec2Key =/= undefined ->
-            Host = Req:get_header_value("Host"),
-            Path = Req:get(path),
-            Body = Req:recv(8),
+            Host = get_header_value("Host", Req),
+            Path = mochiweb_request:get(path, Req),
+            Body = mochiweb_request:recv(8, Req),
             Scheme = scheme(Req),
             hixie_handshake(Scheme, Host, Path, Sec1Key, Sec2Key, Body, Origin);
        true ->
@@ -123,14 +128,14 @@ make_handshake(Req) ->
     %%Subprotol
     case Result of
         {Version, Response = {Status, Headers, Data}} ->
-            if 
+            if
                 SubProto =:= undefined ->
                     {Version, Response};
                 true ->
                     Response1 = {Status, Headers ++ [{"Sec-Websocket-Protocol", SubProto}], Data},
                     {Version, Response1}
             end;
-        error -> 
+        error ->
             error
     end.
 
@@ -170,13 +175,13 @@ hixie_handshake(Scheme, Host, Path, Key1, Key2, Body, Origin) ->
                 Challenge},
     {hixie, Response}.
 
-parse_frames(hybi, Frames, Conn) ->
-    try parse_hybi_frames(Conn, Frames, []) of
+parse_frames(hybi, Frames, Transport, Sock) ->
+    try parse_hybi_frames(Transport, Sock, Frames, []) of
         Parsed -> process_frames(Parsed, [])
     catch
         _:_ -> error
     end;
-parse_frames(hixie, Frames, _Conn) ->
+parse_frames(hixie, Frames, _Transport, _Sock) ->
     try parse_hixie_frames(Frames, []) of
         Payload -> Payload
     catch
@@ -195,90 +200,91 @@ process_frames([{Opcode, Payload} | Rest], Acc) ->
             process_frames(Rest, [Payload | Acc])
     end.
 
-parse_hybi_frames(_, <<>>, Acc) ->
+parse_hybi_frames(_Transport, _Sock, <<>>, Acc) ->
     lists:reverse(Acc);
 
-parse_hybi_frames(Conn, <<_Fin:1,
-                          _Rsv:3,
-                          Opcode:4,
-                          _Mask:1,
-                          PayloadLen:7,
-                          MaskKey:4/binary,
-                          Payload:PayloadLen/binary-unit:8,
-                          Rest/binary>>,
+parse_hybi_frames(Transport, Sock, <<_Fin:1,
+                                     _Rsv:3,
+                                     Opcode:4,
+                                     _Mask:1,
+                                     PayloadLen:7,
+                                     MaskKey:4/binary,
+                                     Payload:PayloadLen/binary-unit:8,
+                                     Rest/binary>>,
                   Acc) when PayloadLen < 126 ->
     Payload2 = hybi_unmask(Payload, MaskKey, <<>>),
-    parse_hybi_frames(Conn, Rest, [{Opcode, Payload2} | Acc]);
+    parse_hybi_frames(Transport, Sock, Rest, [{Opcode, Payload2} | Acc]);
 
-parse_hybi_frames(Conn, <<_Fin:1,
-                          _Rsv:3,
-                          Opcode:4,
-                          _Mask:1,
-                          126:7,
-                          PayloadLen:16,
-                          MaskKey:4/binary,
-                          Payload:PayloadLen/binary-unit:8,
-                          Rest/binary>>, Acc) ->
+parse_hybi_frames(Transport, Sock, <<_Fin:1,
+                                     _Rsv:3,
+                                     Opcode:4,
+                                     _Mask:1,
+                                     126:7,
+                                     PayloadLen:16,
+                                     MaskKey:4/binary,
+                                     Payload:PayloadLen/binary-unit:8,
+                                     Rest/binary>>, Acc) ->
     Payload2 = hybi_unmask(Payload, MaskKey, <<>>),
-    parse_hybi_frames(Conn, Rest, [{Opcode, Payload2} | Acc]);
+    parse_hybi_frames(Transport, Sock, Rest, [{Opcode, Payload2} | Acc]);
 
-parse_hybi_frames(Conn, <<_Fin:1,
-                          _Rsv:3,
-                          _Opcode:4,
-                          _Mask:1,
-                          126:7,
-                          _PayloadLen:16,
-                          _MaskKey:4/binary,
-                          _/binary-unit:8>> = PartFrame, Acc) ->
-    receive_more_frames(Conn, PartFrame, Acc);
+parse_hybi_frames(Transport, Sock, <<_Fin:1,
+                                     _Rsv:3,
+                                     _Opcode:4,
+                                     _Mask:1,
+                                     126:7,
+                                     _PayloadLen:16,
+                                     _MaskKey:4/binary,
+                                     _/binary-unit:8>> = PartFrame, Acc) ->
+    receive_more_frames(Transport, Sock, PartFrame, Acc);
 
-parse_hybi_frames(Conn, <<_Fin:1,
-                          _Rsv:3,
-                          Opcode:4,
-                          _Mask:1,
-                          127:7,
-                          0:1,
-                          PayloadLen:63,
-                          MaskKey:4/binary,
-                          Payload:PayloadLen/binary-unit:8,
-                          Rest/binary>>, Acc) ->
+parse_hybi_frames(Transport, Sock, <<_Fin:1,
+                                     _Rsv:3,
+                                     Opcode:4,
+                                     _Mask:1,
+                                     127:7,
+                                     0:1,
+                                     PayloadLen:63,
+                                     MaskKey:4/binary,
+                                     Payload:PayloadLen/binary-unit:8,
+                                     Rest/binary>>, Acc) ->
     Payload2 = hybi_unmask(Payload, MaskKey, <<>>),
-    parse_hybi_frames(Conn, Rest, [{Opcode, Payload2} | Acc]);
+    parse_hybi_frames(Transport, Sock, Rest, [{Opcode, Payload2} | Acc]);
 
-parse_hybi_frames(Conn, <<_Fin:1,
-                          _Rsv:3,
-                          _Opcode:4,
-                          _Mask:1,
-                          127:7,
-                          0:1,
-                          _PayloadLen:63,
-                          _MaskKey:4/binary,
-                          _/binary-unit:8>> = PartFrame, Acc) ->
-    receive_more_frames(Conn, PartFrame, Acc).
+parse_hybi_frames(Transport, Sock, <<_Fin:1,
+                                     _Rsv:3,
+                                     _Opcode:4,
+                                     _Mask:1,
+                                     127:7,
+                                     0:1,
+                                     _PayloadLen:63,
+                                     _MaskKey:4/binary,
+                                     _/binary-unit:8>> = PartFrame, Acc) ->
+    receive_more_frames(Transport, Sock, PartFrame, Acc).
 
-receive_more_frames(Conn, PartFrame, Acc) ->
-    ok = mochiweb_util:exit_if_closed(Conn:setopts([{packet, 0}, {active, once}])),
+receive_more_frames(Transport, Sock, PartFrame, Acc) ->
+    ok = mochiweb_util:exit_if_closed(
+           Transport:setopts(Sock, [{packet, 0}, {active, once}])),
     receive
         {tcp_closed, _} ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal);
         {ssl_closed, _} ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal);
         {tcp_error, _, _} ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal);
         {ssl_error, _, _} ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal);
         {TcpOrSsl, _, Continuation} when (TcpOrSsl =:= tcp) orelse (TcpOrSsl =:= ssl) ->
-            parse_hybi_frames(Conn, <<PartFrame/binary, Continuation/binary>>, Acc);
+            parse_hybi_frames(Transport, Sock, <<PartFrame/binary, Continuation/binary>>, Acc);
         _ ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal)
     after
         5000 ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal)
     end.
 

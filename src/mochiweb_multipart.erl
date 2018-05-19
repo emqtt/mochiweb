@@ -30,6 +30,7 @@
 -export([default_file_handler/2]).
 
 -define(CHUNKSIZE, 4096).
+-define(Transport, esockd_transport).
 
 -record(mp, {state, boundary, length, buffer, callback, req}).
 
@@ -146,9 +147,9 @@ default_file_handler_1(Filename, ContentType, Acc) ->
 
 parse_multipart_request(Req, Callback) ->
     %% TODO: Support chunked?
-    Length = list_to_integer(Req:get_combined_header_value("content-length")),
+    Length = list_to_integer(mochiweb_request:get_combined_header_value("content-length", Req)),
     Boundary = iolist_to_binary(
-                 get_boundary(Req:get_header_value("content-type"))),
+                 get_boundary(mochiweb_request:get_header_value("content-type", Req))),
     Prefix = <<"\r\n--", Boundary/binary>>,
     BS = byte_size(Boundary),
     Chunk = read_chunk(Req, Length),
@@ -183,9 +184,8 @@ split_header(Line) ->
 read_chunk(Req, Length) when Length > 0 ->
     case Length of
         Length when Length < ?CHUNKSIZE ->
-            Req:recv(Length);
-        _ ->
-            Req:recv(?CHUNKSIZE)
+            mochiweb_request:recv(Length, Req);
+        _ -> mochiweb_request:recv(?CHUNKSIZE, Req)
     end.
 
 read_more(State=#mp{length=Length, buffer=Buffer, req=Req}) ->
@@ -346,9 +346,8 @@ with_socket_server(Transport, ServerFun, ClientFun) ->
     mochiweb_socket_server:stop(Server),
     Res.
 
-fake_request(Socket, ContentType, Length) ->
-    Conn = esockd_connection:new(Socket, fun(Sock) -> {ok, Sock} end, []),
-    mochiweb_request:new(Conn,
+fake_request(Sock, ContentType, Length) ->
+    mochiweb_request:new(?Transport, Sock,
                          'POST',
                          "/multipart",
                          {1,1},

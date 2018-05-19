@@ -19,9 +19,9 @@ start_server() ->
     Pid.
 
 responder(Req) ->
-    Req:respond({200,
-                 [{"Content-Type", "text/html"}],
-                 ["<html><body>Hello</body></html>"]}).
+    mochiweb_request:respond(
+      {200, [{"Content-Type", "text/html"}],
+       ["<html><body>Hello</body></html>"], Req}).
 
 has_bug(Port, Len) ->
   case

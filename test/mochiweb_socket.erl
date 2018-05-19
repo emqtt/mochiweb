@@ -13,8 +13,6 @@
 
 -define(ACCEPT_TIMEOUT, 2000).
 -define(SSL_TIMEOUT, 10000).
--define(SSL_HANDSHAKE_TIMEOUT, 20000).
-
 
 listen(Ssl, Port, Opts, SslOpts) ->
     case Ssl of

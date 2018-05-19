@@ -1,8 +1,11 @@
+
 -module(mochiweb_test_util).
--export([with_server/4, client_request/4, sock_fun/2, read_server_headers/1,
-         drain_reply/3, ssl_cert_opts/0,ssl_client_opts/1]).
+
 -include("mochiweb_test_util.hrl").
 -include_lib("eunit/include/eunit.hrl").
+
+-export([with_server/4, client_request/4, sock_fun/2, read_server_headers/1]).
+-export([drain_reply/3, ssl_cert_opts/0,ssl_client_opts/1]).
 
 ssl_cert_opts() ->
     EbinDir = filename:dirname(code:which(?MODULE)),
@@ -12,14 +15,12 @@ ssl_cert_opts() ->
     [{certfile, CertFile}, {keyfile, KeyFile}].
 
 with_server(Transport, Port, ServerFun, ClientFun) ->
-    ServerOpts = case Transport of
-        plain ->
-		[];
-        ssl ->
-            [{sslopts, ssl_cert_opts()}]
-    end,
-    lists:foreach(fun application:start/1, [asn1, crypto, public_key, ssl, gen_logger, esockd]),
-    mochiweb:start_http(Port, ServerOpts, ServerFun),
+    Options = case Transport of
+                  tcp -> [];
+                  ssl -> [{ssl_options, ssl_cert_opts()}]
+              end,
+    lists:foreach(fun application:ensure_all_started/1, [crypto, ssl, esockd]),
+    mochiweb:start_http(Port, Options, ServerFun),
     Res = (catch ClientFun(Transport, Port)),
     mochiweb:stop_http(Port),
     Res.
@@ -35,7 +36,7 @@ ssl_client_opts(Opts) ->
 sock_fun(Transport, Port) ->
     Opts = [binary, {active, false}, {packet, http}],
     case Transport of
-        plain ->
+        tcp ->
             {ok, Socket} = gen_tcp:connect("127.0.0.1", Port, Opts),
             fun (recv) ->
                     gen_tcp:recv(Socket, 0);

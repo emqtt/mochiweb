@@ -25,121 +25,114 @@
 
 -author('bob@mochimedia.com').
 
--export([start_link/2]).
--export([init/2, loop/2]).
--export([after_response/3, reentry/2]).
+-export([start_link/3]).
+-export([init/3, loop/3]).
+-export([after_response/4, reentry/3]).
 -export([parse_range_request/1, range_skip_length/2]).
 
--define(REQUEST_RECV_TIMEOUT, 300000).   %% timeout waiting for request line
--define(HEADERS_RECV_TIMEOUT, 30000).    %% timeout waiting for headers
+%% timeout waiting for request line
+-define(REQUEST_RECV_TIMEOUT, 30000).
+%% timeout waiting for headers
+-define(HEADERS_RECV_TIMEOUT, 30000).
 
 -define(MAX_HEADERS, 1000).
 
--ifdef(gen_tcp_r15b_workaround).
-r15b_workaround() -> true.
--else.
-r15b_workaround() -> false.
--endif.
+start_link(Transport, Sock, Callback) ->
+    {ok, spawn_link(?MODULE, init, [Transport, Sock, Callback])}.
 
-start_link(Conn, Callback) ->
-    {ok, spawn_link(?MODULE, init, [Conn, Callback])}.
+init(Transport, Sock, Callback) ->
+    case Transport:wait(Sock) of
+        {ok, NewSock} ->
+            loop(Transport, NewSock, Callback);
+        {error, Reason} ->
+            exit(Reason)
+    end.
 
-init(Conn, Callback) ->
-    {ok, NewConn} = Conn:wait(),
-	loop(NewConn, Callback).
+loop(Transport, Sock, Callback) ->
+    ok = mochiweb_util:exit_if_closed(
+           Transport:setopts(Sock, [{packet, http}])),
+    request(Transport, Sock, Callback).
 
-loop(Conn, Callback) ->
-    ok = mochiweb_util:exit_if_closed(Conn:setopts([{packet, http}])),
-    request(Conn, Callback).
-
-request(Conn, Callback) ->
-    ok = mochiweb_util:exit_if_closed(Conn:setopts([{active, once}])),
+request(Transport, Sock, Callback) ->
+    ok = mochiweb_util:exit_if_closed(
+           Transport:setopts(Sock, [{active, once}])),
     receive
-        {Protocol, _, {http_request, Method, Path, Version}} when Protocol == http orelse Protocol == ssl ->
-            ok = mochiweb_util:exit_if_closed(Conn:setopts([{packet, httph}])),
-            headers(Conn, {Method, Path, Version}, [], Callback, 0);
+        {Protocol, _, {http_request, Method, Path, Version}}
+          when Protocol == http orelse Protocol == ssl ->
+            ok = mochiweb_util:exit_if_closed(
+                   Transport:setopts(Sock, [{packet, httph}])),
+            headers(Transport, Sock, {Method, Path, Version}, [], Callback, 0);
         {Protocol, _, {http_error, "\r\n"}} when Protocol == http orelse Protocol == ssl ->
-            request(Conn, Callback);
+            request(Transport, Sock, Callback);
         {Protocol, _, {http_error, "\n"}} when Protocol == http orelse Protocol == ssl ->
-            request(Conn, Callback);
+            request(Transport, Sock, Callback);
         {tcp_closed, _} ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal);
         {ssl_closed, _} ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal);
-        Other ->
-            handle_invalid_msg_request(Other, Conn)
+        _Other ->
+            handle_invalid_request(Transport, Sock)
     after ?REQUEST_RECV_TIMEOUT ->
-        Conn:close(),
+        Transport:fast_close(Sock),
         exit(normal)
     end.
 
-reentry(Conn, Callback) ->
-    fun (Req) ->
-            ?MODULE:after_response(Conn, Callback, Req)
-    end.
+reentry(Transport, Sock, Callback) ->
+    fun(Req) -> ?MODULE:after_response(Transport, Sock, Callback, Req) end.
 
-headers(Conn, Request, Headers, _Callback, ?MAX_HEADERS) ->
+headers(Transport, Sock, Request, Headers, _Callback, ?MAX_HEADERS) ->
     %% Too many headers sent, bad request.
-    ok = mochiweb_util:exit_if_closed(Conn:setopts([{packet, raw}])),
-    handle_invalid_request(Conn, Request, Headers);
+    ok = mochiweb_util:exit_if_closed(
+           Transport:setopts(Sock, [{packet, raw}])),
+    handle_invalid_request(Transport, Sock, Request, Headers);
 
-headers(Conn, Request, Headers, Callback, HeaderCount) ->
-    ok = mochiweb_util:exit_if_closed(Conn:setopts([{active, once}])),
+headers(Transport, Sock, Request, Headers, Callback, HeaderCount) ->
+    ok = mochiweb_util:exit_if_closed(
+           Transport:setopts(Sock, [{active, once}])),
     receive
-        {Protocol, _, http_eoh} when Protocol == http orelse Protocol == ssl ->
-            Req = new_request(Conn, Request, Headers),
+        {Protocol, _, http_eoh} when Protocol =:= http; Protocol =:= ssl ->
+            Req = new_request(Transport, Sock, Request, Headers),
             callback(Callback, Req),
-            ?MODULE:after_response(Conn, Callback, Req);
-        {Protocol, _, {http_header, _, Name, _, Value}} when Protocol == http orelse Protocol == ssl ->
-            headers(Conn, Request, [{Name, Value} | Headers], Callback, 1 + HeaderCount);
+            ?MODULE:after_response(Transport, Sock, Callback, Req);
+        {Protocol, _, {http_header, _, Name, _, Value}} when Protocol =:= http; Protocol =:= ssl ->
+            headers(Transport, Sock, Request, [{Name, Value} | Headers], Callback, 1 + HeaderCount);
         {tcp_closed, _} ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal);
-        Other ->
-            handle_invalid_msg_request(Other, Conn, Request, Headers)
+        _Other ->
+            handle_invalid_request(Transport, Sock, Request, Headers)
     after ?HEADERS_RECV_TIMEOUT ->
-        Conn:close(),
+        Transport:fast_close(Sock),
         exit(normal)
     end.
 
+-spec(handle_invalid_request(esockd:transport(), esockd:socket()) -> no_return()).
+handle_invalid_request(Transport, Sock) ->
+    handle_invalid_request(Transport, Sock, {'GET', {abs_path, "/"}, {0,9}}, []).
 
--spec handle_invalid_msg_request(term(), esockd_connection:connection()) -> no_return().
-handle_invalid_msg_request(Msg, Conn) ->
-    handle_invalid_msg_request(Msg, Conn, {'GET', {abs_path, "/"}, {0,9}}, []).
-
--spec handle_invalid_msg_request(term(), esockd_connection:connection(), term(), term()) -> no_return().
-handle_invalid_msg_request(Msg, Conn, Request, RevHeaders) ->
-    case {Msg, r15b_workaround()} of
-        {{tcp_error,_,emsgsize}, true} ->
-            %% R15B02 returns this then closes the socket, so close and exit
-            Conn:close(),
-            exit(normal);
-        _ ->
-            handle_invalid_request(Conn, Request, RevHeaders)
-    end.
-
--spec handle_invalid_request(esockd_connection:connection(), term(), term()) -> no_return().
-handle_invalid_request(Conn, Request, RevHeaders) ->
-    Req = new_request(Conn, Request, RevHeaders),
-    Req:respond({400, [], []}),
-    Conn:close(),
+%%-spec handle_invalid_request(esockd_connection:connection(), term(), term()) -> no_return().
+handle_invalid_request(Transport, Sock, Request, RevHeaders) ->
+    Req = new_request(Transport, Sock, Request, RevHeaders),
+    mochiweb_request:respond({400, [], []}, Req),
+    Transport:fast_close(Sock),
     exit(normal).
 
-new_request(Conn, Request, RevHeaders) ->
-    ok = mochiweb_util:exit_if_closed(Conn:setopts([{packet, raw}])),
-    mochiweb:new_request({Conn, Request, lists:reverse(RevHeaders)}).
+new_request(Transport, Sock, Request, RevHeaders) ->
+    ok = mochiweb_util:exit_if_closed(
+           Transport:setopts(Sock, [{packet, raw}])),
+    mochiweb:new_request({Transport, Sock, Request, lists:reverse(RevHeaders)}).
 
-after_response(Conn, Callback, Req) ->
-    case Req:should_close() of
+after_response(Transport, Sock, Callback, Req) ->
+    case mochiweb_request:should_close(Req) of
         true ->
-            Conn:close(),
+            Transport:fast_close(Sock),
             exit(normal);
         false ->
-            Req:cleanup(),
+            mochiweb_request:cleanup(Req),
             erlang:garbage_collect(),
-            ?MODULE:loop(Conn, Callback)
+            loop(Transport, Sock, Callback)
     end.
 
 parse_range_request(RawRange) when is_list(RawRange) ->
@@ -185,7 +178,7 @@ callback({M, F}, Req) ->
     M:F(Req);
 callback(Callback, Req) when is_function(Callback) ->
     Callback(Req).
-    
+
 %%
 %% Tests
 %%

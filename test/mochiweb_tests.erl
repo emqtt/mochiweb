@@ -2,52 +2,52 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("mochiweb_test_util.hrl").
 
+-define(LARGE_TIMEOUT, 60).
+
 with_server(Transport, ServerFun, ClientFun) ->
     mochiweb_test_util:with_server(Transport, 8000 + rand:uniform(1000), ServerFun, ClientFun).
 
 request_test() ->
-    Conn = esockd_connection:new(esockd_transport, fun(Sock) -> {ok, Sock} end, []),
-    R = mochiweb_request:new(Conn, z, "/foo/bar/baz%20wibble+quux?qs=2", z, []),
-    "/foo/bar/baz wibble quux" = R:get(path),
+    Req = mochiweb_request:new(esockd_transport, sock,
+                               z, "/foo/bar/baz%20wibble+quux?qs=2", z, []),
+    ?assertEqual("/foo/bar/baz wibble quux", mochiweb_request:get(path, Req)),
     ok.
 
--define(LARGE_TIMEOUT, 60).
-
 single_http_GET_test() ->
-    do_GET(plain, 1).
+    do_GET(tcp, 1).
 
 single_https_GET_test() ->
     do_GET(ssl, 1).
 
 multiple_http_GET_test() ->
-    do_GET(plain, 3).
+    do_GET(tcp, 3).
 
 multiple_https_GET_test() ->
     do_GET(ssl, 3).
 
 hundred_http_GET_test_() -> % note the underscore
     {timeout, ?LARGE_TIMEOUT,
-     fun() -> ?assertEqual(ok, do_GET(plain,100)) end}.
+     fun() -> ?assertEqual(ok, do_GET(tcp, 100)) end}.
 
 hundred_https_GET_test_() -> % note the underscore
     {timeout, ?LARGE_TIMEOUT,
      fun() -> ?assertEqual(ok, do_GET(ssl,100)) end}.
 
 single_128_http_POST_test() ->
-    do_POST(plain, 128, 1).
+    do_POST(tcp, 128, 1).
 
 single_128_https_POST_test() ->
     do_POST(ssl, 128, 1).
 
 single_2k_http_POST_test() ->
-    do_POST(plain, 2048, 1).
+    do_POST(tcp, 2048, 1).
 
 single_2k_https_POST_test() ->
     do_POST(ssl, 2048, 1).
 
 single_100k_http_POST_test_() -> % note the underscore
     {timeout, ?LARGE_TIMEOUT,
-     fun() -> ?assertEqual(ok, do_POST(plain, 102400, 1)) end}.
+     fun() -> ?assertEqual(ok, do_POST(tcp, 102400, 1)) end}.
 
 single_100k_https_POST_test_() -> % note the underscore
     {timeout, ?LARGE_TIMEOUT,
@@ -55,7 +55,7 @@ single_100k_https_POST_test_() -> % note the underscore
 
 multiple_100k_http_POST_test() ->
     {timeout, ?LARGE_TIMEOUT,
-     fun() -> ?assertEqual(ok, do_POST(plain, 102400, 3)) end}.
+     fun() -> ?assertEqual(ok, do_POST(tcp, 102400, 3)) end}.
 
 multiple_100K_https_POST_test() ->
     {timeout, ?LARGE_TIMEOUT,
@@ -63,7 +63,7 @@ multiple_100K_https_POST_test() ->
 
 hundred_128_http_POST_test_() -> % note the underscore
     {timeout, ?LARGE_TIMEOUT,
-     fun() -> ?assertEqual(ok, do_POST(plain, 128, 100)) end}.
+     fun() -> ?assertEqual(ok, do_POST(tcp, 128, 100)) end}.
 
 hundred_128_https_POST_test_() -> % note the underscore
     {timeout, ?LARGE_TIMEOUT,
@@ -71,31 +71,33 @@ hundred_128_https_POST_test_() -> % note the underscore
 
 single_GET_scheme_test_() ->
     [{"ssl", ?_assertEqual(ok, do_GET("derp", ssl, 1))},
-     {"plain", ?_assertEqual(ok, do_GET("derp", plain, 1))}].
+     {"tcp", ?_assertEqual(ok, do_GET("derp", tcp, 1))}].
 
 single_GET_absoluteURI_test_() ->
     Uri = "https://example.com:123/x/",
     ServerFun = fun (Req) ->
-                        Req:ok({"text/plain", Req:get(path)})
+                    Path = mochiweb_request:get(path, Req),
+                    mochiweb_request:ok({"text/plain", Path}, Req)
                 end,
     %% Note that all the scheme/host/port information is discarded from path
     ClientFun = new_client_fun('GET', [#treq{path = Uri, xreply = <<"/x/">>}]),
     [{atom_to_list(Transport),
       ?_assertEqual(ok, with_server(Transport, ServerFun, ClientFun))}
-     || Transport <- [ssl, plain]].
+     || Transport <- [ssl, tcp]].
 
 single_CONNECT_test_() ->
     [{"ssl", ?_assertEqual(ok, do_CONNECT(ssl, 1))},
-     {"plain", ?_assertEqual(ok, do_CONNECT(plain, 1))}].
+     {"tcp", ?_assertEqual(ok, do_CONNECT(tcp, 1))}].
 
 single_GET_any_test_() ->
     ServerFun = fun (Req) ->
-                        Req:ok({"text/plain", Req:get(path)})
+                    Path = mochiweb_request:get(path, Req),
+                    mochiweb_request:ok({"text/plain", Path}, Req)
                 end,
     ClientFun = new_client_fun('GET', [#treq{path = "*", xreply = <<"*">>}]),
     [{atom_to_list(Transport),
       ?_assertEqual(ok, with_server(Transport, ServerFun, ClientFun))}
-     || Transport <- [ssl, plain]].
+     || Transport <- [ssl, tcp]].
 
 
 cookie_header_test() ->
@@ -103,14 +105,14 @@ cookie_header_test() ->
     ExHeaders = [{"Set-Cookie", "foo=bar"},
                  {"Set-Cookie", "foo=baz"}],
     ServerFun = fun (Req) ->
-                        Reply = ReplyPrefix ++ Req:get(path),
-                        Req:ok({"text/plain", ExHeaders, Reply})
+                   Reply = ReplyPrefix ++ mochiweb_request:get(path, Req),
+                   mochiweb_request:ok({"text/plain", ExHeaders, Reply}, Req)
                 end,
     Path = "cookie_header",
     ExpectedReply = list_to_binary(ReplyPrefix ++ Path),
     TestReqs = [#treq{path=Path, xreply=ExpectedReply, xheaders=ExHeaders}],
     ClientFun = new_client_fun('GET', TestReqs),
-    ok = with_server(plain, ServerFun, ClientFun),
+    ok = with_server(tcp, ServerFun, ClientFun),
     ok.
 
 
@@ -118,8 +120,8 @@ do_CONNECT(Transport, Times) ->
     PathPrefix = "example.com:",
     ReplyPrefix = "You requested: ",
     ServerFun = fun (Req) ->
-                        Reply = ReplyPrefix ++ Req:get(path),
-                        Req:ok({"text/plain", Reply})
+                        Reply = ReplyPrefix ++ mochiweb_request:get(path, Req),
+                        mochiweb_request:ok({"text/plain", Reply}, Req)
                 end,
     TestReqs = [begin
                     Path = PathPrefix ++ integer_to_list(N),
@@ -136,8 +138,8 @@ do_GET(Transport, Times) ->
 do_GET(PathPrefix, Transport, Times) ->
     ReplyPrefix = "You requested: ",
     ServerFun = fun (Req) ->
-                        Reply = ReplyPrefix ++ Req:get(path),
-                        Req:ok({"text/plain", Reply})
+                        Reply = ReplyPrefix ++ mochiweb_request:get(path, Req),
+                        mochiweb_request:ok({"text/plain", Reply}, Req)
                 end,
     TestReqs = [begin
                     Path = PathPrefix ++ integer_to_list(N),
@@ -150,9 +152,9 @@ do_GET(PathPrefix, Transport, Times) ->
 
 do_POST(Transport, Size, Times) ->
     ServerFun = fun (Req) ->
-                        Body = Req:recv_body(),
+                        Body = mochiweb_request:recv_body(Req),
                         Headers = [{"Content-Type", "application/octet-stream"}],
-                        Req:respond({201, Headers, Body})
+                        mochiweb_request:respond({201, Headers, Body}, Req)
                 end,
     TestReqs = [begin
                     Path = "/stuff/" ++ integer_to_list(N),
@@ -170,7 +172,7 @@ new_client_fun(Method, TestReqs) ->
 
 close_on_unread_data_test() ->
     ok = with_server(
-           plain,
+           tcp,
            fun mochiweb_request:not_found/1,
            fun close_on_unread_data_client/2).
 

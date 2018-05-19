@@ -27,11 +27,8 @@
 
 make_handshake_for_correct_client_test() ->
     %% Hybi handshake
-    Conn = esockd_connection:new(esockd_transport, nil, []),
-    Req1 = mochiweb_request:new(Conn,
-             'GET', "/foo", {1, 1},
-             mochiweb_headers:make([{"Sec-WebSocket-Key",
-                                     "Xn3fdKyc3qEXPuj2A3O+ZA=="}])),
+    Req1 = mochiweb_request:new(esockd_transport, sock, 'GET', "/foo", {1, 1},
+                                mochiweb_headers:make([{"Sec-WebSocket-Key", "Xn3fdKyc3qEXPuj2A3O+ZA=="}])),
 
     {Version1,
      {HttpCode1, Headers1, _}} = mochiweb_websocket:make_handshake(Req1),
@@ -60,14 +57,13 @@ make_handshake_for_correct_client_test() ->
        Body2).
 
 hybi_frames_decode_test() ->
-    Conn = esockd_connection:new(esockd_transport, nil, []),
     ?assertEqual(
        [{1, <<"foo">>}],
-       mochiweb_websocket:parse_hybi_frames(Conn,
+       mochiweb_websocket:parse_hybi_frames(esockd_transport, sock,
          <<129,131,118,21,153,58,16,122,246>>, [])),
     ?assertEqual(
        [{1, <<"foo">>}, {1, <<"bar">>}],
-       mochiweb_websocket:parse_hybi_frames(Conn,
+       mochiweb_websocket:parse_hybi_frames(esockd_transport, sock,
          <<129,131,1,225,201,42,103,142,166,129,131,93,222,214,66,63,191,164>>,
          [])).
 
