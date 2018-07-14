@@ -37,23 +37,23 @@
 
 -define(MAX_HEADERS, 1000).
 
-start_link(Transport, Sock, Callback) ->
-    {ok, spawn_link(?MODULE, init, [Transport, Sock, Callback])}.
+start_link(Transport, Sock, Handler) ->
+    {ok, spawn_link(?MODULE, init, [Transport, Sock, Handler])}.
 
-init(Transport, Sock, Callback) ->
+init(Transport, Sock, Handler) ->
     case Transport:wait(Sock) of
         {ok, NewSock} ->
-            loop(Transport, NewSock, Callback);
+            loop(Transport, NewSock, Handler);
         {error, Reason} ->
             exit(Reason)
     end.
 
-loop(Transport, Sock, Callback) ->
+loop(Transport, Sock, Handler) ->
     ok = mochiweb_util:exit_if_closed(
            Transport:setopts(Sock, [{packet, http}])),
-    request(Transport, Sock, Callback).
+    request(Transport, Sock, Handler).
 
-request(Transport, Sock, Callback) ->
+request(Transport, Sock, Handler) ->
     ok = mochiweb_util:exit_if_closed(
            Transport:setopts(Sock, [{active, once}])),
     receive
@@ -61,11 +61,11 @@ request(Transport, Sock, Callback) ->
           when Protocol == http orelse Protocol == ssl ->
             ok = mochiweb_util:exit_if_closed(
                    Transport:setopts(Sock, [{packet, httph}])),
-            headers(Transport, Sock, {Method, Path, Version}, [], Callback, 0);
+            headers(Transport, Sock, {Method, Path, Version}, [], Handler, 0);
         {Protocol, _, {http_error, "\r\n"}} when Protocol == http orelse Protocol == ssl ->
-            request(Transport, Sock, Callback);
+            request(Transport, Sock, Handler);
         {Protocol, _, {http_error, "\n"}} when Protocol == http orelse Protocol == ssl ->
-            request(Transport, Sock, Callback);
+            request(Transport, Sock, Handler);
         {tcp_closed, _} ->
             Transport:fast_close(Sock),
             exit(normal);
@@ -79,25 +79,25 @@ request(Transport, Sock, Callback) ->
         exit(normal)
     end.
 
-reentry(Transport, Sock, Callback) ->
-    fun(Req) -> ?MODULE:after_response(Transport, Sock, Callback, Req) end.
+reentry(Transport, Sock, Handler) ->
+    fun(Req) -> ?MODULE:after_response(Transport, Sock, Handler, Req) end.
 
-headers(Transport, Sock, Request, Headers, _Callback, ?MAX_HEADERS) ->
+headers(Transport, Sock, Request, Headers, _Handler, ?MAX_HEADERS) ->
     %% Too many headers sent, bad request.
     ok = mochiweb_util:exit_if_closed(
            Transport:setopts(Sock, [{packet, raw}])),
     handle_invalid_request(Transport, Sock, Request, Headers);
 
-headers(Transport, Sock, Request, Headers, Callback, HeaderCount) ->
+headers(Transport, Sock, Request, Headers, Handler, HeaderCount) ->
     ok = mochiweb_util:exit_if_closed(
            Transport:setopts(Sock, [{active, once}])),
     receive
         {Protocol, _, http_eoh} when Protocol =:= http; Protocol =:= ssl ->
             Req = new_request(Transport, Sock, Request, Headers),
-            callback(Callback, Req),
-            ?MODULE:after_response(Transport, Sock, Callback, Req);
+            _ = apply_handler(Handler, Req),
+            ?MODULE:after_response(Transport, Sock, Handler, Req);
         {Protocol, _, {http_header, _, Name, _, Value}} when Protocol =:= http; Protocol =:= ssl ->
-            headers(Transport, Sock, Request, [{Name, Value} | Headers], Callback, 1 + HeaderCount);
+            headers(Transport, Sock, Request, [{Name, Value} | Headers], Handler, 1 + HeaderCount);
         {tcp_closed, _} ->
             Transport:fast_close(Sock),
             exit(normal);
@@ -124,7 +124,7 @@ new_request(Transport, Sock, Request, RevHeaders) ->
            Transport:setopts(Sock, [{packet, raw}])),
     mochiweb:new_request({Transport, Sock, Request, lists:reverse(RevHeaders)}).
 
-after_response(Transport, Sock, Callback, Req) ->
+after_response(Transport, Sock, Handler, Req) ->
     case mochiweb_request:should_close(Req) of
         true ->
             Transport:fast_close(Sock),
@@ -132,7 +132,7 @@ after_response(Transport, Sock, Callback, Req) ->
         false ->
             mochiweb_request:cleanup(Req),
             erlang:garbage_collect(),
-            loop(Transport, Sock, Callback)
+            loop(Transport, Sock, Handler)
     end.
 
 parse_range_request(RawRange) when is_list(RawRange) ->
@@ -172,12 +172,12 @@ range_skip_length(Spec, Size) ->
             invalid_range
     end.
 
-callback({M, F, A}, Req) ->
+apply_handler({M, F, A}, Req) ->
     erlang:apply(M, F, [Req | A]);
-callback({M, F}, Req) ->
+apply_handler({M, F}, Req) ->
     M:F(Req);
-callback(Callback, Req) when is_function(Callback) ->
-    Callback(Req).
+apply_handler(Handler, Req) when is_function(Handler) ->
+    Handler(Req).
 
 %%
 %% Tests

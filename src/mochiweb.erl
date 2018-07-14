@@ -44,21 +44,21 @@
 
 %% @doc Start HTTP Listener
 -spec(start_http(esockd:listen_on(), esockd:mfargs()) -> {ok, pid()}).
-start_http(ListenOn, MFArgs) ->
-    start_http(ListenOn, [], MFArgs).
+start_http(ListenOn, Handler) ->
+    start_http(ListenOn, [], Handler).
 
 -spec(start_http(esockd:listen_on(), [esockd:option()], esockd:mfargs())
       -> {ok, pid()} | {error, term()}).
-start_http(ListenOn, Options, MFArgs) ->
-    start_http(http, ListenOn, Options, MFArgs).
+start_http(ListenOn, Options, Handler) ->
+    start_http(http, ListenOn, Options, Handler).
 
 -spec(start_http(atom(), esockd:listen_on(), [esockd:option()], esockd:mfargs())
       -> {ok, pid()} | {error, term()}).
-start_http(Proto, ListenOn, Options, MFArgs) when is_atom(Proto) ->
+start_http(Proto, ListenOn, Options, Handler) when is_atom(Proto) ->
     SockOpts = merge_opts(?SOCKET_OPTS,
                           proplists:get_value(sockopts, Options, [])),
     esockd:open(Proto, ListenOn, merge_opts(Options, [{sockopts, SockOpts}]),
-                {mochiweb_http, start_link, [MFArgs]}).
+                {mochiweb_http, start_link, [Handler]}).
 
 %% @doc Stop HTTP Listener
 -spec(stop_http(esockd:listen_on()) -> ok).
