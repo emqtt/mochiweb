@@ -73,11 +73,10 @@ get_field(Key, Args) ->
 %%      is used to implement formats such as {0.0}.
 get_field(Key, Args, Module) ->
     {Name, Next} = lists:splitwith(fun (C) -> C =/= $. end, Key),
-    Res = try Module:get_value(Name, Args)
+    Res = try tuple_call(Module, get_value, [Name, Args])
           catch error:undef -> get_value(Name, Args) end,
     case Next of
-        "" ->
-            Res;
+        "" -> Res;
         "." ++ S1 ->
             get_field(S1, Res, Module)
     end.
@@ -201,14 +200,21 @@ format2([{format, {Key, Convert, Format0}} | Rest], Args, Module, Acc) ->
                 V1 = convert_field(V0, Convert),
                 format_field(V1, Format);
             _ ->
-                V0 = try Module:get_field(Key, Args)
+                V0 = try tuple_call(Module, get_field, [Key, Args])
                      catch error:undef -> get_field(Key, Args, Module) end,
-                V1 = try Module:convert_field(V0, Convert)
+                V1 = try tuple_call(Module, convert_field, [V0, Convert])
                      catch error:undef -> convert_field(V0, Convert) end,
-                try Module:format_field(V1, Format)
+                try tuple_call(Module, format_field, [V1, Format])
                 catch error:undef -> format_field(V1, Format, Module) end
         end,
     format2(Rest, Args, Module, [V | Acc]).
+
+tuple_call(Module, Fun, Args) when is_atom(Module) ->
+    erlang:apply(Module, Fun, Args);
+tuple_call({Module}, Fun, Args) ->
+    erlang:apply(Module, Fun, Args ++ [{Module}]);
+tuple_call(TupMod = {Module, _Attrs}, Fun, Args) ->
+    erlang:apply(Module, Fun, Args ++ [TupMod]).
 
 default_ctype(_Arg, C=#conversion{ctype=N}) when N =/= undefined ->
     C;
@@ -433,9 +439,9 @@ std_test() ->
 records_test() ->
     M = mochifmt_records:new([{conversion, record_info(fields, conversion)}]),
     R = #conversion{length=long, precision=hard, sign=peace},
-    long = M:get_value("length", R),
-    hard = M:get_value("precision", R),
-    peace = M:get_value("sign", R),
+    long = tuple_call(M, get_value, ["length", R]),
+    hard = tuple_call(M, get_value, ["precision", R]),
+    peace = tuple_call(M, get_value, ["sign", R]),
     <<"long hard">> = bformat("{length} {precision}", R, M),
     <<"long hard">> = bformat("{0.length} {0.precision}", [R], M),
     ok.

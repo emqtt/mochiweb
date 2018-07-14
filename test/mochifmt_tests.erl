@@ -52,9 +52,9 @@ std_test() ->
 records_test() ->
     M = mochifmt_records:new([{conversion, record_info(fields, conversion)}]),
     R = #conversion{length=long, precision=hard, sign=peace},
-    long = M:get_value("length", R),
-    hard = M:get_value("precision", R),
-    peace = M:get_value("sign", R),
+    long = mochifmt_records:get_value("length", R, M),
+    hard = mochifmt_records:get_value("precision", R, M),
+    peace = mochifmt_records:get_value("sign", R, M),
     <<"long hard">> = bformat("{length} {precision}", R, M),
     <<"long hard">> = bformat("{0.length} {0.precision}", [R], M),
     ok.
